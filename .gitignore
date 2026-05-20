@@ -1,0 +1,8 @@
+# R session files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# R project files
+*.Rproj
