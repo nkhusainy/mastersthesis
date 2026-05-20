@@ -1,8 +1,3 @@
----
-title: "README"
-output: html_document
----
-
 # Text preprocessing for rater inconsistency detection in Dutch open-ended exam responses
 
 ## Introduction
