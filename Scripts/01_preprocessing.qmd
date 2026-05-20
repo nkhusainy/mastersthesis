@@ -1,0 +1,448 @@
+---
+title: "Text Preprocessing"
+format: revealjs
+editor: visual
+---
+
+```{r}
+#| include: false
+exam_data <- readRDS("../Data/01_raw/data_raw.rds")
+```
+
+## Load Libraries
+
+```{r}
+#| include: false
+# Load packages
+library(dplyr)
+library(stringr)
+library(textclean)
+library(stringdist)
+library(stopwords)
+library(spacyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(ggalluvial)
+library(xtable)
+```
+
+## Filter Data
+
+This study only includes three subjects: biology, economics, and nature and chemistry I. These subjects were chosen because they differ in the type of knowledge and response formats they elicit. Biology and nature and chemistry items typically require descriptive or concept-based answers, often expressed in short phrases or full sentences, whereas economics items more frequently involve reasoning process, definitions, or calculations.
+
+```{r}
+#| echo: true
+exam_data <- exam_data %>%
+  filter(vaknaam == "biologie" |
+         vaknaam == "economie" |
+         vaknaam == "natuur- en scheikunde I")
+```
+
+## Cleaning
+
+```{r}
+#| echo: true
+# Remove HTML formatting first (before preprocessing)
+exam_clean <- exam_data %>%
+  mutate(
+    # Remove HTML tags and entities
+    response_nohtml = textclean::replace_html(response_clean),
+    response_nohtml = str_squish(response_nohtml)
+  )
+
+# Rescore items to 0/1
+exam_clean <- exam_clean %>%
+  mutate(score = if_else(score == 2, 1, score))
+```
+
+## Integrate word length into the data
+
+```{r}
+# -----------------------------
+# 1. Compute lengths
+# -----------------------------
+
+exam_clean <- exam_clean %>%
+  mutate(
+    char_len = nchar(response_nohtml),
+    word_len = str_count(response_nohtml, "\\S+")
+  )
+
+# -----------------------------
+# 2. Item-level length metrics
+# -----------------------------
+
+exam_item_length_raw <- exam_clean %>%
+  group_by(item_label, vaknaam) %>%
+  summarise(
+    median_char_length = median(char_len, na.rm = TRUE),
+    n_item_responses = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(vaknaam) %>%
+  mutate(
+    length_metric = (median_char_length - min(median_char_length, na.rm = TRUE)) /
+      (max(median_char_length, na.rm = TRUE) - min(median_char_length, na.rm = TRUE) + 1e-9),
+    item_length_group = ntile(length_metric, 3)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    item_length_group = factor(
+      item_length_group,
+      levels = c(1, 2, 3),
+      labels = c("Short", "Medium", "Long")
+    )
+  )
+
+# -----------------------------
+# 3. Clean join (no .x/.y EVER)
+# -----------------------------
+
+exam_clean <- exam_clean %>%
+  select(
+    -any_of(c(
+      "median_char_length",
+      "n_item_responses",
+      "length_metric",
+      "item_length_group"
+    ))
+  ) %>%
+  left_join(
+    exam_item_length_raw %>%
+      select(
+        item_label,
+        vaknaam,
+        median_char_length,
+        n_item_responses,
+        length_metric,
+        item_length_group
+      ),
+    by = c("item_label", "vaknaam")
+  )
+
+# -----------------------------
+# 4. Descriptives
+# -----------------------------
+
+## TABLE 1: Median word length per item length group and subject
+length_descriptives <- exam_clean %>%
+  group_by(vaknaam, item_length_group) %>%
+  summarise(
+    median_words = median(word_len, na.rm = TRUE),
+    mean_words = mean(word_len, na.rm = TRUE),
+    min_words = min(word_len, na.rm = TRUE),
+    max_words = max(word_len, na.rm = TRUE),
+    n_responses = n(),
+    n_items = n_distinct(item_label),
+    .groups = "drop"
+  )
+
+length_descriptives
+```
+
+## Pre-process
+
+```{r}
+# Initialize spaCy once before running the iterative procedure
+spacy_initialize(
+  model = "nl_core_news_sm",
+  entity = FALSE
+)
+
+# Lowercase preprocessing function
+lowercase_step <- function(x) {
+  str_to_lower(x)
+}
+
+# Punctuation removal preprocessing function
+punctuation_step <- function(x) {
+  str_squish(str_remove_all(x, "[[:punct:]]"))
+}
+
+# Stop-words removal preprocessing function
+stopword_step <- function(x) {
+  keep_words <- c("ja", "nee", "niet")
+  sw_nl <- setdiff(stopwords("nl"), keep_words)
+  sw_nl_esc <- str_replace_all(sw_nl, "([\\W])", "\\\\\\1")
+
+  str_squish(
+    str_remove_all(
+      x,
+      paste0("\\b(", paste(sw_nl_esc, collapse = "|"), ")\\b")
+    )
+  )
+}
+
+# Lemmatization removal preprocessing function
+lemmatize_spacy_unique <- function(x, batch_size = 10000) {
+  x <- coalesce(x, "")
+  
+  lookup <- tibble(
+    response_in = unique(x)
+  ) %>%
+    mutate(doc_id = as.character(row_number()))
+  
+  split_index <- split(
+    seq_len(nrow(lookup)),
+    ceiling(seq_len(nrow(lookup)) / batch_size)
+  )
+  
+  out_list <- vector("list", length(split_index))
+  
+  # This processes only unique intermediate responses and optionally in batches,
+  # which reduces redundant spaCy calls while preserving identical outputs.
+  for (i in seq_along(split_index)) {
+    idx <- split_index[[i]]
+    batch_lookup <- lookup[idx, ]
+    
+    texts <- batch_lookup$response_in
+    names(texts) <- batch_lookup$doc_id
+    
+    parsed <- spacy_parse(
+      texts,
+      lemma = TRUE,
+      pos = FALSE,
+      tag = FALSE,
+      entity = FALSE,
+      dependency = FALSE,
+      nounphrase = FALSE,
+      multithread = FALSE
+    )
+    
+    batch_lemma <- parsed %>%
+      group_by(doc_id) %>%
+      summarise(
+        response_out = str_squish(paste(lemma, collapse = " ")),
+        .groups = "drop"
+      )
+    
+    out_list[[i]] <- batch_lookup %>%
+      left_join(batch_lemma, by = "doc_id") %>%
+      mutate(response_out = coalesce(response_out, response_in)) %>%
+      select(response_in, response_out)
+  }
+  
+  bind_rows(out_list)
+}
+
+lemmatization_step <- function(x, batch_size = 10000) {
+  lookup <- lemmatize_spacy_unique(x, batch_size = batch_size)
+  lookup$response_out[match(x, lookup$response_in)]
+}
+
+apply_named_step <- function(x, step_name, batch_size = 10000) {
+  if (step_name == "lowercase") {
+    lowercase_step(x)
+  } else if (step_name == "punctuation") {
+    punctuation_step(x)
+  } else if (step_name == "lemmatization") {
+    lemmatization_step(x, batch_size = batch_size)
+  } else if (step_name == "stopword") {
+    stopword_step(x)
+  } else {
+    stop("Unknown preprocessing step: ", step_name)
+  }
+}
+
+# ============================================================
+# ITERATIVE PREPROCESSING WITH SCORE RESOLUTION
+# ============================================================
+
+resolve_score <- function(mean_score) {
+  dplyr::case_when(
+    is.na(mean_score) ~ NA_real_,
+    mean_score < 0.40 ~ 0,
+    mean_score <= 0.60 ~ 0.5,
+    mean_score > 0.60 ~ 1
+  )
+}
+
+make_size_bin <- function(n) {
+  dplyr::case_when(
+    n == 1 ~ "1",
+    n >= 2  & n <= 3  ~ "2-3",
+    n >= 4  & n <= 5  ~ "4-5",
+    n >= 6  & n <= 15 ~ "6-15",
+    n >= 16 & n <= 30 ~ "16-30",
+    n > 30 ~ ">30",
+  )
+}
+
+summarise_stage_resolved <- function(data, stage_name) {
+  data %>%
+    group_by(vaknaam, item_label, item_length_group, response_current) %>%
+    summarise(
+      n = n(),
+      mean_score = mean(score_current, na.rm = TRUE),
+      sd_score = sd(score_current, na.rm = TRUE),
+      n_score_values = n_distinct(score_current[!is.na(score_current)]),
+      inconsistent = n_score_values > 1,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      stage = stage_name,
+      resolved_score = resolve_score(mean_score),
+      size_bin = make_size_bin(n)
+    )
+}
+
+run_iterative_preprocessing_resolved <- function(
+    data,
+    step_order = c("lowercase", "punctuation", "lemmatization", "stopword"),
+    batch_size = 5000
+) {
+  
+  step_labels <- c(
+    lowercase = "Lowercasing",
+    punctuation = "No Punctuation",
+    lemmatization = "Lemmatization",
+    stopword = "Stopword Removal"
+  )
+  
+  working_data <- data %>%
+    mutate(row_id = row_number()) %>%
+    transmute(
+      row_id,
+      vaknaam,
+      item_label,
+      item_length_group,
+      response_current = coalesce(response_nohtml, ""),
+      score_current = score
+    )
+  
+  stage_summaries <- list()
+  transition_summaries <- list()
+  text_list <- list()
+  
+  # ----------------------------
+  # Stage 0: cleaned responses
+  # ----------------------------
+  stage_summaries[[1]] <- summarise_stage_resolved(
+    working_data,
+    stage_name = "0. Cleaned"
+  )
+  
+  text_list[[1]] <- working_data$response_current
+names(text_list)[1] <- "0. Cleaned"
+
+  # Resolve scores after Stage 0
+  working_data <- working_data %>%
+    left_join(
+      stage_summaries[[1]] %>%
+        select(
+          vaknaam,
+          item_label,
+          item_length_group,
+          response_current,
+          resolved_score
+        ),
+      by = c("vaknaam", "item_label", "item_length_group", "response_current")
+    ) %>%
+    mutate(score_current = resolved_score) %>%
+    select(-resolved_score)
+  
+  # ----------------------------
+  # Iterative preprocessing steps
+  # ----------------------------
+  for (i in seq_along(step_order)) {
+    
+    step_name <- step_order[i]
+    stage_name <- paste0(i, ". ", step_labels[[step_name]])
+    
+    # clusters before applying the step
+    source_clusters <- working_data %>%
+      group_by(
+        vaknaam,
+        item_label,
+        item_length_group,
+        response_before = response_current
+      ) %>%
+      summarise(
+        n_before = n(),
+        from_bin = make_size_bin(n_before),
+        source_score = mean(score_current, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    # apply preprocessing step to individual responses
+    working_data <- working_data %>%
+      mutate(
+        response_before = response_current,
+        response_current = apply_named_step(
+          response_current,
+          step_name = step_name,
+          batch_size = batch_size
+        )
+      )
+    
+    text_list[[i + 1]] <- working_data$response_current
+names(text_list)[i + 1] <- stage_name
+
+    # summarise clusters after this step
+    stage_summary <- summarise_stage_resolved(
+      working_data,
+      stage_name = stage_name
+    )
+    
+    stage_summaries[[i + 1]] <- stage_summary
+    
+    # track movement from old cluster bins to new cluster bins
+    transition_summaries[[i]] <- tibble()
+    
+    # resolve scores before going to the next preprocessing step
+    working_data <- working_data %>%
+      left_join(
+        stage_summary %>%
+          select(
+            vaknaam,
+            item_label,
+            item_length_group,
+            response_current,
+            resolved_score
+          ),
+        by = c("vaknaam", "item_label", "item_length_group", "response_current")
+      ) %>%
+      mutate(score_current = resolved_score) %>%
+      select(-resolved_score, -response_before)
+  }
+  
+  processed_data <- data %>%
+  mutate(!!!setNames(text_list, names(text_list)))
+
+  list(
+    processed_data = processed_data,
+    stage_summary = bind_rows(stage_summaries),
+    transitions = bind_rows(transition_summaries)
+  )
+
+}
+
+# Define the default preprocessing order used in the main analysis
+default_order <- c("lowercase", "punctuation", "lemmatization", "stopword")
+
+# Not used, but put as an example, if you were to experiment with other ordering
+alternative_order <- c("stopword", "lemmatization", "lowercase", "punctuation")
+
+# Run the iterative preprocessing pipeline using the default stage order, feel free to experiment
+result_resolved <- run_iterative_preprocessing_resolved(
+  data = exam_clean,
+  step_order = default_order,
+  batch_size = 10000
+)
+
+# Extract the cluster-level summary across all preprocessing stages
+stage_summary <- result_resolved$stage_summary
+
+# Extract the response-level dataset with processed text columns added
+exam_processed <- result_resolved$processed_data
+```
+
+## Save Preprocessed Data
+
+```{r}
+#| include: false
+save(exam_processed, file = "../Data/02_preprocessed/data_preprocessed.RData")
+save(exam_processed, file = "../Output/01_preprocessed/data_preprocessed.RData")
+save(stage_summary, file = "../Output/02_results/stage_summary.RData")
+```

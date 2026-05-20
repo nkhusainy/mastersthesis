@@ -1,0 +1,469 @@
+---
+title: "Text Preprocessing"
+format: revealjs
+editor: visual
+---
+
+## Load Libraries
+
+```{r}
+#| include: false
+# Load packages
+library(dplyr)
+library(stringr)
+library(textclean)
+library(stringdist)
+library(stopwords)
+library(spacyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(ggalluvial)
+library(xtable)
+```
+
+## Load Preprocessed Data
+
+```{r}
+#| include: false
+load("../Output/01_preprocessed/data_preprocessed.RData")
+load("../Output/02_results/stage_summary.RData")
+```
+
+## Selected Items
+
+To illustrate how preprocessing affects both the structure of response clusters and the occurrence of these inconsistencies, a subset of nine items was selected based on the presence of sufficient non-singleton clusters and observable inconsistencies at baseline. One item is selected for each item length group and each subject to ensure coverage across conditions. These items are the public ones.
+
+```{r}
+selected_item_labels <- c("32f65m", "32cduw", "32ddak", "32jwg8", "32eq6b", "32ggsx", "32eyee", "328hr6", "32la75")
+```
+
+## Results
+
+### Table 2: Distribution of cluster sizes and inconsistencies across preprocessing stages
+
+```{r}
+# Adjusted item labels and order
+item_lookup <- tibble::tribble(
+  ~Item,          ~item_label,
+  "Item\\_1a",   "32f65m",
+  "Item\\_1b",   "32cduw",
+  "Item\\_1c",   "32ddak",
+  "Item\\_2a",   "32jwg8",
+  "Item\\_2b",   "32eq6b",
+  "Item\\_2c",   "32ggsx",
+  "Item\\_3a",   "32eyee",
+  "Item\\_3b",   "328hr6",
+  "Item\\_3c",   "32la75"
+)
+
+# Assign each cluster to a size bin based on the number of responses
+make_bin <- function(n) {
+  dplyr::case_when(
+    n == 1 ~ "1",
+    n >= 2  & n <= 3  ~ "2-3",
+    n >= 4  & n <= 5  ~ "4-5",
+    n >= 6  & n <= 15 ~ "6-15",
+    n >= 16 & n <= 30 ~ "16-30",
+    n > 30 ~ ">30",
+  )
+}
+
+# Define the display order of the cluster-size bins
+bin_levels <- c("1", "2-3", "4-5", "6-15", "16-30", ">30")
+
+# Create the summary table of total and inconsistent clusters by item, stage, and size bin
+bin_table_all_items <- stage_summary %>%
+  semi_join(item_lookup, by = "item_label") %>%
+  left_join(item_lookup, by = "item_label") %>%
+  mutate(
+    Item = factor(Item, levels = item_lookup$Item),
+    size_bin = factor(make_bin(n), levels = bin_levels),
+    stage = factor(
+      stage,
+      levels = c(
+        "0. Cleaned",
+        "1. Lowercasing",
+        "2. No Punctuation",
+        "3. Lemmatization",
+        "4. Stopword Removal"
+      )
+    )
+  ) %>%
+  group_by(Item, stage, size_bin) %>%
+  summarise(
+    total_groups = dplyr::n(),
+    inconsistent_groups = sum(inconsistent, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    cell = ifelse(
+      size_bin == "1",
+      as.character(total_groups),
+      paste0(total_groups, " (", inconsistent_groups, ")")
+    )
+  ) %>%
+  select(Item, stage, size_bin, cell) %>%
+  pivot_wider(
+    names_from = size_bin,
+    values_from = cell,
+    values_fill = "0 (0)"
+  ) %>%
+  arrange(Item, stage) %>%
+  rename(
+    Stage = stage,
+    `$>$30` = `>30`
+  )
+
+# Display the final wide-format table in R
+bin_table_all_items
+
+# Blank repeated item labels, showing each item only once
+bin_table_export <- bin_table_all_items %>%
+  group_by(Item) %>%
+  mutate(
+    Item = ifelse(row_number() == ceiling(n() / 2), as.character(Item), "")
+  ) %>%
+  ungroup()
+
+# Mark first row of each item block
+bin_sep <- bin_table_all_items %>%
+  arrange(Item, Stage) %>%
+  group_by(Item) %>%
+  mutate(
+    new_group = row_number() == 1
+  ) %>%
+  ungroup()
+
+# Store the row positions where item block separators should be inserted
+add_lines <- which(bin_sep$new_group)
+
+# Convert the table to a LaTeX longtable objec
+xt <- xtable(
+  bin_table_export,
+  caption = "Distribution of cluster sizes and inconsistencies across preprocessing stages",
+  label = "tab:bin_table"
+)
+
+# Export the formatted LaTeX table
+print(
+  xt,
+  file = "bin_table_all_items.tex",
+  include.rownames = FALSE,
+  tabular.environment = "longtable",
+  floating = FALSE,
+  sanitize.text.function = identity,
+  add.to.row = list(
+    pos = as.list(add_lines - 1),
+    command = rep("\\hline \n", length(add_lines))
+  )
+)
+```
+
+### Figure 3: Consistent and Inconsistent Cluster Sizes
+
+```{r}
+plot_bins_line <- stage_summary %>%
+  semi_join(tibble(item_label = selected_item_labels), by = "item_label") %>%
+  filter(size_bin != "1") %>%  # keep n = 1 in data, exclude from plot
+  mutate(
+    size_bin = factor(make_bin(n), levels = bin_levels),
+    stage = factor(
+      stage,
+      levels = c(
+        "0. Cleaned",
+        "1. Lowercasing",
+        "2. No Punctuation",
+        "3. Lemmatization",
+        "4. Stopword Removal"
+      )
+    )
+  ) %>%
+  group_by(vaknaam, item_label, item_length_group, stage, size_bin) %>%
+  summarise(
+    total_clusters = n(),
+    inconsistent_clusters = sum(inconsistent, na.rm = TRUE),
+    prop_inconsistent = inconsistent_clusters / total_clusters,
+    .groups = "drop"
+  ) %>%
+  ggplot(
+    aes(
+      x = stage,
+      y = inconsistent_clusters,
+      color = size_bin,
+      group = size_bin
+    )
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_point(aes(size = total_clusters), alpha = 0.8) +
+  facet_grid(item_length_group ~ vaknaam, scales = "free_y") +
+  labs(
+    x = "Preprocessing stage",
+    y = "Number of inconsistent clusters",
+    color = "Cluster size bin",
+    size = "Total clusters",
+    caption = "Singleton clusters are excluded from the plot for readability."
+  ) +
+  scale_size_continuous(breaks = c(20, 50, 100, 150)) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+plot_bins_line
+ggsave("../Output/02_results/stacked-lines.png",
+       plot = plot_bins_line,
+       width = 8,
+       height = 6,
+       dpi = 300)
+```
+
+### Figure 4: Distribution of Average Scores for Inconsistent Clusters
+
+```{r}
+plot_score_distribution <- stage_summary %>%
+  semi_join(tibble(item_label = selected_item_labels), by = "item_label") %>%
+  filter(size_bin != "1", inconsistent) %>%
+  mutate(
+    size_bin = factor(make_bin(n), levels = bin_levels)
+  ) %>%
+  ggplot(aes(x = mean_score)) +
+  geom_histogram(binwidth = 0.1, boundary = 0, closed = "left") +
+  facet_grid(size_bin ~ stage) +
+  labs(
+    x = "Average score of inconsistent cluster",
+    y = "Number of inconsistent clusters"
+  ) +
+  theme_minimal(base_size = 11)
+
+plot_score_distribution
+
+ggsave("../Output/02_results/score-distribution.png",
+       plot = plot_score_distribution,
+       width = 8,
+       height = 6,
+       dpi = 300)
+```
+
+### Tables 3-6: Transition Matrices
+
+```{r}
+# -----------------------------
+# 1. Define preprocessing stages
+# -----------------------------
+
+stage_cols <- c(
+  "0. Cleaned",
+  "1. Lowercasing",
+  "2. No Punctuation",
+  "3. Lemmatization",
+  "4. Stopword Removal"
+)
+
+cluster_cols <- c(
+  "cluster_0_Cleaned",
+  "cluster_1_Lowercasing",
+  "cluster_2_No_Punctuation",
+  "cluster_3_Lemmatization",
+  "cluster_4_Stopword_Removal"
+)
+
+score_col <- "score"
+
+bin_levels <- c("1", "2-3", "4-5", "6-15", "16-30", ">30")
+
+make_bin <- function(n) {
+  case_when(
+    n == 1 ~ "1",
+    n >= 2  & n <= 3  ~ "2-3",
+    n >= 4  & n <= 5  ~ "4-5",
+    n >= 6  & n <= 15 ~ "6-15",
+    n >= 16 & n <= 30 ~ "16-30",
+    n > 30 ~ ">30",
+    TRUE ~ NA_character_
+  )
+}
+
+
+# -----------------------------
+# 2. Create cluster IDs per stage
+# -----------------------------
+
+exam_processed_clustered <- exam_processed
+
+for (s in stage_cols) {
+  new_col <- paste0("cluster_", gsub("[^A-Za-z0-9]+", "_", s))
+
+  exam_processed_clustered <- exam_processed_clustered %>%
+    group_by(item_label, .data[[s]]) %>%
+    mutate("{new_col}" := cur_group_id()) %>%
+    ungroup()
+}
+
+
+# -----------------------------
+# 3. Create inconsistency indicator per cluster
+# -----------------------------
+
+for (cl in cluster_cols) {
+  new_col <- paste0("inconsistent_", cl)
+
+  exam_processed_clustered <- exam_processed_clustered %>%
+    group_by(item_label, .data[[cl]]) %>%
+    mutate("{new_col}" := n_distinct(.data[[score_col]], na.rm = TRUE) > 1) %>%
+    ungroup()
+}
+
+
+# -----------------------------
+# 4. Bin function
+# -----------------------------
+
+make_bin <- function(n) {
+  case_when(
+    n == 1 ~ "1",
+    n >= 2  & n <= 3  ~ "2-3",
+    n >= 4  & n <= 5  ~ "4-5",
+    n >= 6  & n <= 15 ~ "6-15",
+    n >= 16 & n <= 30 ~ "16-30",
+    n > 30 ~ ">30",
+    TRUE ~ NA_character_
+  )
+}
+
+
+# -----------------------------
+# 5. Transition matrix function
+# -----------------------------
+
+make_transition_matrix <- function(data,
+                                   from_cluster,
+                                   to_cluster,
+                                   inconsistency_col) {
+
+  data %>%
+    group_by(item_label, .data[[from_cluster]]) %>%
+    mutate(from_size = n()) %>%
+    ungroup() %>%
+    group_by(item_label, .data[[to_cluster]]) %>%
+    mutate(to_size = n()) %>%
+    ungroup() %>%
+    mutate(
+      from_bin = factor(make_bin(from_size), levels = bin_levels),
+      to_bin   = factor(make_bin(to_size), levels = bin_levels)
+    ) %>%
+    distinct(
+      item_label,
+      from_cluster_id = .data[[from_cluster]],
+      to_cluster_id   = .data[[to_cluster]],
+      from_bin,
+      to_bin,
+      inconsistent_after = .data[[inconsistency_col]]
+    ) %>%
+    group_by(from_bin, to_bin) %>%
+    summarise(
+      n_groups = n(),
+      n_inconsistent = sum(inconsistent_after == TRUE, na.rm = TRUE),
+      cell = paste0(n_groups, " (", n_inconsistent, ")"),
+      .groups = "drop"
+    ) %>%
+    select(from_bin, to_bin, cell) %>%
+    complete(
+      from_bin = factor(bin_levels, levels = bin_levels),
+      to_bin   = factor(bin_levels, levels = bin_levels),
+      fill = list(cell = "0 (0)")
+    ) %>%
+    pivot_wider(
+      names_from = to_bin,
+      values_from = cell
+    ) %>%
+    arrange(factor(from_bin, levels = bin_levels)) %>%
+    select(from_bin, `1`, `2-3`, `4-5`, `6-15`, `16-30`, `>30`)
+}
+
+# Table 1: Cleaned -> Lowercasing
+tab_clean_lower <- make_transition_matrix(
+  exam_processed_clustered,
+  from_cluster = "cluster_0_Cleaned",
+  to_cluster = "cluster_1_Lowercasing",
+  inconsistency_col = "inconsistent_cluster_1_Lowercasing"
+)
+
+tab_clean_lower
+
+# Table 2: Lowercasing -> No Punctuation
+tab_lower_nopunct <- make_transition_matrix(
+  exam_processed_clustered,
+  from_cluster = "cluster_1_Lowercasing",
+  to_cluster = "cluster_2_No_Punctuation",
+  inconsistency_col = "inconsistent_cluster_2_No_Punctuation"
+)
+
+tab_lower_nopunct
+
+# Table 3: No Punctuation -> Lemmatization
+tab_nopunct_lemma <- make_transition_matrix(
+  exam_processed_clustered,
+  from_cluster = "cluster_2_No_Punctuation",
+  to_cluster = "cluster_3_Lemmatization",
+  inconsistency_col = "inconsistent_cluster_3_Lemmatization"
+)
+
+tab_nopunct_lemma
+
+# Table 4: Lemmatization -> Stopword Removal
+tab_lemma_stopword <- make_transition_matrix(
+  exam_processed_clustered,
+  from_cluster = "cluster_3_Lemmatization",
+  to_cluster = "cluster_4_Stopword_Removal",
+  inconsistency_col = "inconsistent_cluster_4_Stopword_Removal"
+)
+
+tab_lemma_stopword
+
+# export
+print(
+  xtable(tab_clean_lower,
+         caption = "Transition matrix from cleaned to lowercased responses.",
+         label = "tab:tab-0-1"),
+  include.rownames = FALSE,
+  floating = TRUE,
+  table.placement = "H",
+  caption.placement = "top",
+  file = "../Output/02_results/tab_clean_lower.tex"
+)
+
+print(
+  xtable(tab_lower_nopunct,
+         caption = "Transition matrix from lowercased to no-punctuation responses.",
+         label = "tab:tab-1-2"),
+  include.rownames = FALSE,
+  floating = TRUE,
+  table.placement = "H",
+  caption.placement = "top",
+  file = "../Output/02_results/tab_lower_nopunct.tex"
+)
+
+print(
+  xtable(tab_nopunct_lemma,
+         caption = "Transition matrix from no-punctuation to lemmatized responses.",
+         label = "tab:tab-2-3"),
+  include.rownames = FALSE,
+  floating = TRUE,
+  table.placement = "H",
+  caption.placement = "top",
+  file = "../Output/02_results/tab_nopunct_lemma.tex"
+)
+
+print(
+  xtable(tab_lemma_stopword,
+         caption = "Transition matrix from lemmatized to stopword-removed responses.",
+         label = "tab:tab-3-4"),
+  include.rownames = FALSE,
+  floating = TRUE,
+  table.placement = "H",
+  caption.placement = "top",
+  file = "../Output/02_results/tab_lemma_stopword.tex"
+)
+```

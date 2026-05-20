@@ -1,0 +1,6 @@
+---
+title: "README"
+output: html_document
+---
+
+Running the script `01_preprocessed.qmd` from the `Scripts` folder should render a file named `data_preprocessed.RData`. However, such preprocessed data still cannot be shared to the public since it contains confidential real student answers. Therefore, you need to obtain the real raw data first to run and yield the preprocessed data.

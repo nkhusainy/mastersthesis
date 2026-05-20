@@ -1,0 +1,28 @@
+---
+title: "README"
+output: html_document
+---
+
+The data used in this project belongs to Cito Netherlands and cannot be shared to public. However, to gain access to the dataset used, follow the general procedure below:
+
+## What
+
+The full dataset contains open-ended answers from students taking the National Examinations for Secondary Education in the Netherlands. The exams were for the basic vocational pathway (*VMBO-BB*), and the intermediate vocational pathway (*VMBO-KB*). The subjects included in this study are biology (*biologie*), economics (*economie*), and nature and chemistry (*natuur- en scheikunde I*), in the year 2022-2025.
+
+## Where
+
+You can go to the office and ask from the main desk for data access procedure at: Cito Amsterdamseweg 13, 6814 CM Arnhem.
+
+## Who
+
+Or you can go through the Customer Service for data request procedure:
+
+Telephone: (026) 352 11 11
+
+E-mail: [klantenservice\@cito.nl](mailto:klantenservice@cito.nl){.email}
+
+## How
+
+Ask either through the office main desk or through the Customer Service, explain the specifics of the dataset used, from there they will guide you through the procedure if such request can be granted.
+
+A mock data `data_mock.Rdata` is provided in the folder `01_raw` to give readers an idea of the data structure with fictitious examples.
