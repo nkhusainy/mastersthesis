@@ -18,7 +18,6 @@ The repository comes in the structure of:
 ├── Data
 │   ├── 01_raw
 │      └── data_mock.Rdata
-│   ├── 02_preprocessed
 │   └── README.md
 ├── Output
 │   ├── 01_preprocessed
