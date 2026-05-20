@@ -1,0 +1,20 @@
+---
+title: "Requirements"
+output: html_document
+---
+
+# Requirements
+
+## R Version
+
+-   R Version R version 4.5.1 (2025-06-13 ucrt)
+
+## R Packages
+
+The list of R packages used can be found in the `renv.lock` file. The packages are required to run the code with: - `renv` version 1.2.3
+
+Install the `renv` version above and run the following command in R:
+
+```         
+renv::restore()
+```
