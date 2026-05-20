@@ -442,7 +442,6 @@ exam_processed <- result_resolved$processed_data
 
 ```{r}
 #| include: false
-save(exam_processed, file = "../Data/02_preprocessed/data_preprocessed.RData")
 save(exam_processed, file = "../Output/01_preprocessed/data_preprocessed.RData")
 save(stage_summary, file = "../Output/02_results/stage_summary.RData")
 ```
